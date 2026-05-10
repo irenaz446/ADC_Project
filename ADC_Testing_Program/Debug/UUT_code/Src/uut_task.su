@@ -1,0 +1,2 @@
+../UUT_code/Src/uut_task.c:35:13:send_result_callback	32	static
+../UUT_code/Src/uut_task.c:68:6:uut_send_result	48	static
