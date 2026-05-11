@@ -1,7 +1,7 @@
 Run the application:
 
 Bash
-python gui_program_adc.py
+python3 gui_program_adc.py
 
 CLI Usage:
 ./uut_cli adc
