@@ -28,6 +28,14 @@ typedef struct {
     u16_t         port; /* Destination port (PC source port) */
 } udp_send_req_t;
 
+/**
+ * @brief  Calculates a zlib-compatible CRC32 over a byte buffer.
+ * @param  data: Pointer to the data buffer
+ * @param  len:  Length in bytes
+ * @retval 32-bit CRC result
+ */
+uint32_t UUT_ComputeCRC(uint8_t *data, uint32_t len);
+
 /* ---------------------------------------------------------------------------
  * @brief  Sends a test result to the PC via the lwIP core task.
  *

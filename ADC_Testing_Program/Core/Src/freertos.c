@@ -25,6 +25,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include "uut_task.h"
 #include "pc_test_uut.h"
 #include "queue.h"
 #include "semphr.h"
@@ -256,18 +257,8 @@ void udp_receive_callback(void *arg, struct udp_pcb *upcb, struct pbuf *p,
 		uint8_t *payload_ptr = (uint8_t *)p->payload;
 		uint32_t rx_crc, calc_crc;
 		memcpy(&rx_crc, payload_ptr + payload_len, 4);
-		// Reset the CRC unit to initial value (0xFFFFFFFF) before calculation
-		__HAL_CRC_DR_RESET(&hcrc);
 
-		// Process the exact payload length byte-by-byte
-		//calc_crc = HAL_CRC_Accumulate(&hcrc, (uint32_t*)data_ptr, payload_len);
-	    for (uint32_t i = 0; i < payload_len; i++) {
-	            // Write byte-by-byte to the Data Register
-	            // (Hardware is already configured for Input Format = Bytes)
-	            *(__IO uint8_t *)&hcrc.Instance->DR = payload_ptr[i];
-	        }
-		calc_crc = hcrc.Instance->DR ^ 0xFFFFFFFF;
-		//calc_crc = HAL_CRC_Calculate(&hcrc, (uint32_t*)p->payload, payload_len);
+		calc_crc = UUT_ComputeCRC(payload_ptr, payload_len);
 		if (calc_crc == rx_crc) {
 			packet_t cmd_copy;
 			memset(&cmd_copy, 0, sizeof(packet_t));

@@ -22,6 +22,26 @@
  * -------------------------------------------------------------------------*/
 extern CRC_HandleTypeDef hcrc;
 
+/**
+ * @brief  Calculates a zlib-compatible CRC32 over a byte buffer.
+ * @param  data: Pointer to the data buffer
+ * @param  len:  Length in bytes
+ * @retval 32-bit CRC result
+ */
+uint32_t UUT_ComputeCRC(uint8_t *data, uint32_t len)
+{
+    // 1. Reset the CRC unit to 0xFFFFFFFF
+    __HAL_CRC_DR_RESET(&hcrc);
+
+    /* 2. Use the HAL Accumulate function.
+       Because hcrc.InputDataFormat is set to BYTES in crc.c,
+       the HAL will internally handle the byte-by-byte writing to the DR register. */
+    uint32_t crc_raw = HAL_CRC_Accumulate(&hcrc, (uint32_t*)data, len);
+
+    // 3. Apply the final XOR to match PC (zlib)
+    return (crc_raw ^ 0xFFFFFFFF);
+}
+
 /* ---------------------------------------------------------------------------
  * Private: lwIP core callback that executes the actual UDP send.
  *
@@ -85,17 +105,7 @@ void uut_send_result(uint8_t opcode, uint16_t length, uint8_t *data,
 
         // 5. Calculate CRC over Opcode + Length + Data
         // We use payload_len (total bytes before the CRC footer)
-        __HAL_CRC_DR_RESET(&hcrc);
-
-		// Feed bytes one by one. This avoids alignment issues and
-		// handles non-word-multiple lengths (like 3 or 5 bytes) correctly.
-		uint8_t *ptr = (uint8_t*)&udp_result->res;
-		for (uint32_t i = 0; i < payload_len; i++) {
-			*(__IO uint8_t *)&hcrc.Instance->DR = ptr[i];
-		}
-		// APPLY THE FINAL XOR (Bitwise NOT)
-		// This makes the STM32 result match the PC's zlib/Python CRC32
-		uint32_t tx_crc = hcrc.Instance->DR ^ 0xFFFFFFFF;
+        uint32_t tx_crc = UUT_ComputeCRC((uint8_t*)&udp_result->res, payload_len);
 
         // 6. Append CRC to the end of the data buffer
         // We place the 4-byte CRC immediately after the 'data' field
