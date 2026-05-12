@@ -28,8 +28,6 @@
 #include "uut_task.h"
 #include "pc_test_uut.h"
 #include "queue.h"
-#include "semphr.h"
-#include "usart.h"
 #include "lwip/udp.h"
 #include <string.h>
 /* USER CODE END Includes */
@@ -52,17 +50,10 @@
 
 /* Private variables ---------------------------------------------------------*/
 /* USER CODE BEGIN Variables */
-TaskHandle_t      ADCTaskHandle;
-TaskHandle_t      DispatcherTaskHandle;
-QueueHandle_t     periphQueueHandle;
-SemaphoreHandle_t adcSemHandle;
-
-extern CRC_HandleTypeDef hcrc;
-/* Shared: Dispatcher writes, peripheral task reads */
-packet_t    g_adc_cmd;
-
-uint16_t g_pc_port;
-ip_addr_t g_pc_ip_addr;
+TaskHandle_t  adcTaskHandle;
+QueueHandle_t adcQueueHandle;
+uint16_t      g_pc_port;
+ip_addr_t     g_pc_ip_addr;
 /* USER CODE END Variables */
 /* Definitions for defaultTask */
 osThreadId_t defaultTaskHandle;
@@ -75,7 +66,6 @@ const osThreadAttr_t defaultTask_attributes = {
 /* Private function prototypes -----------------------------------------------*/
 /* USER CODE BEGIN FunctionPrototypes */
 
-void StartDispatcherTask(void *argument);
 void StartADCTask(void *argument);
 void udp_listener_init(void);
 void udp_receive_callback(void *arg, struct udp_pcb *upcb, struct pbuf *p,
@@ -103,7 +93,6 @@ void MX_FREERTOS_Init(void) {
 
   /* USER CODE BEGIN RTOS_SEMAPHORES */
 	/* add semaphores, ... */
-	adcSemHandle = xSemaphoreCreateBinary();
   /* USER CODE END RTOS_SEMAPHORES */
 
   /* USER CODE BEGIN RTOS_TIMERS */
@@ -112,7 +101,7 @@ void MX_FREERTOS_Init(void) {
 
   /* USER CODE BEGIN RTOS_QUEUES */
 	/* add queues, ... */
-	periphQueueHandle = xQueueCreate(QUEUE_COUNT, QUEUE_ITEM_SIZE);
+	adcQueueHandle = xQueueCreate(QUEUE_COUNT, QUEUE_ITEM_SIZE);
   /* USER CODE END RTOS_QUEUES */
 
   /* Create the thread(s) */
@@ -121,16 +110,11 @@ void MX_FREERTOS_Init(void) {
 
   /* USER CODE BEGIN RTOS_THREADS */
 	/* add threads, ... */
-	xTaskCreate(StartDispatcherTask, "Dispatcher",
-				configMINIMAL_STACK_SIZE * 2,
-				NULL, osPriorityNormal1,   /* Priority 25 */
-				&DispatcherTaskHandle);
-
 	xTaskCreate(StartADCTask,
 				"ADCTask",
 				configMINIMAL_STACK_SIZE * 4,
 	            NULL, osPriorityNormal1,
-				&ADCTaskHandle);
+				&adcTaskHandle);
   /* USER CODE END RTOS_THREADS */
 
   /* USER CODE BEGIN RTOS_EVENTS */
@@ -163,41 +147,11 @@ void StartDefaultTask(void *argument)
 /* Private application code --------------------------------------------------*/
 /* USER CODE BEGIN Application */
 /**
- * @brief  DispatcherTask — routes commands from the queue to peripheral tasks.
- *
- * Reads test_command_t items from periphQueueHandle and wakes the appropriate
- * peripheral task via its semaphore.
- *
- * @param  argument  Unused.
- * @retval None 
- * -------------------------------------------------------------------------*/
-void StartDispatcherTask(void *argument) {
-	packet_t cmd;
-
-    for (;;) {
-        if (xQueueReceive(periphQueueHandle, &cmd, portMAX_DELAY) == pdPASS) {
-            switch (cmd.opcode) {
-                case ADC_TEST:
-                    g_adc_cmd = cmd;
-                    xSemaphoreGive(adcSemHandle);
-                    break;
-
-                default:
-                    printf("Dispatcher: unknown peripheral ID %d\r\n", cmd.opcode);
-                    break;
-            }
-        }
-    }
-}
-
-/* ---------------------------------------------------------------------------
  * @brief  Initializes the lwIP UDP listener on UUT_PORT.
  *
  * Must be called from defaultTask only (lwIP context).
  * Registers udp_receive_callback to handle all incoming packets.
- *
- * @retval None
- * -------------------------------------------------------------------------*/
+ */
 void udp_listener_init(void)
 {
     struct udp_pcb *upcb = udp_new();
@@ -219,20 +173,18 @@ void udp_listener_init(void)
     printf("UUT: UDP listener ready\r\n");
 }
 
-/* ---------------------------------------------------------------------------
+/**
  * @brief  UDP receive callback — called by lwIP when a packet arrives.
  *
- * Copies the packet payload into a local test_command_t struct, saves the
- * sender's source port (needed to reply), frees the pbuf, then pushes the
- * command into periphQueueHandle for the Dispatcher.
+ * Validates the minimum packet size and CRC, then routes the command
+ * to the appropriate peripheral queue.
  *
- * @param  arg   Unused user argument.
+ * @param  arg   Unused.
  * @param  upcb  UDP PCB that received the packet (unused).
- * @param  p     Received pbuf chain (must be freed before returning).
+ * @param  p     Received pbuf chain — must be freed before returning.
  * @param  addr  Source IP address of the sender.
  * @param  port  Source port of the sender — saved to g_pc_port.
- * @retval None
- * -------------------------------------------------------------------------*/
+ */
 void udp_receive_callback(void *arg, struct udp_pcb *upcb, struct pbuf *p,
                           const ip_addr_t *addr, u16_t port)
 {
@@ -242,43 +194,47 @@ void udp_receive_callback(void *arg, struct udp_pcb *upcb, struct pbuf *p,
     if (p == NULL) {
         return;
     }
+
     packet_t *rcv_packet = (packet_t *)p->payload;
+    printf("\r\nNetwork: packet received (opcode=%d, length=%d)\r\n",
+           rcv_packet->opcode, rcv_packet->length);
 
-    printf("\r\nNetwork: packet received (Test opcode=%d, length=%d)\r\n",
-    		rcv_packet->opcode, rcv_packet->length);
+    /* Minimum packet: Opcode(1) + Length(2) + CRC(4) = 7 bytes */
+    if (p->len < 7) {
+        printf("WARNING: packet too small (length=%d)\r\n", p->len);
+        pbuf_free(p);
+        return;
+    }
 
-    // 1. Verify Minimum Size (Opcode + Length + CRC = 7 bytes)
-	if (p->len >= 7) {
-		g_pc_port = port;
-		g_pc_ip_addr = *addr;
+    g_pc_port    = port;
+    g_pc_ip_addr = *addr;
 
-		// 2. Validate CRC before putting it in the queue
-		uint32_t payload_len = p->len - 4;
-		uint8_t *payload_ptr = (uint8_t *)p->payload;
-		uint32_t rx_crc, calc_crc;
-		memcpy(&rx_crc, payload_ptr + payload_len, 4);
+    /* Validate CRC */
+    uint32_t payload_len = p->len - 4;
+    uint8_t *payload_ptr = (uint8_t *)p->payload;
+    uint32_t rx_crc, calc_crc;
+    memcpy(&rx_crc, payload_ptr + payload_len, 4);
+    calc_crc = UUT_ComputeCRC(payload_ptr, payload_len);
 
-		calc_crc = UUT_ComputeCRC(payload_ptr, payload_len);
-		if (calc_crc == rx_crc) {
-			packet_t cmd_copy;
-			memset(&cmd_copy, 0, sizeof(packet_t));
-			uint16_t safe_len = (payload_len > sizeof(packet_t)) ? sizeof(packet_t) : payload_len;
-			memcpy(&cmd_copy, p->payload, safe_len);
-			pbuf_free(p);
+    if (calc_crc != rx_crc) {
+        printf("WARNING: CRC mismatch (rx=%lu, calc=%lu)\r\n", rx_crc, calc_crc);
+        pbuf_free(p);
+        return;
+    }
 
-		    /* Push to Dispatcher queue */
-		    if (xQueueSendToBack(periphQueueHandle, &cmd_copy, 0) != pdPASS) {
-		        printf("WARNING: Peripheral queue full! \r\n");
-		    }
-		}
-		else {
-			printf("WARNING: Wrong CRC: received crc: %lu, calculated crc: %lu\r\n", rx_crc, calc_crc);
-		}
-	}
-	else {
-	    printf("WARNING: packet length is too small! (length = %d)\r\n", p->len);
+    /* Copy packet and free pbuf */
+    packet_t cmd;
+    memset(&cmd, 0, sizeof(cmd));
+    uint16_t safe_len = (payload_len > sizeof(cmd)) ? sizeof(cmd) : (uint16_t)payload_len;
+    memcpy(&cmd, p->payload, safe_len);
+    pbuf_free(p);
 
-	}
+    /* Route to the correct peripheral queue */
+    if (cmd.opcode == ADC_TEST) {
+        if (xQueueSendToBack(adcQueueHandle, &cmd, 0) != pdPASS) {
+            printf("WARNING: ADC queue full!\r\n");
+        }
+    }
 }
 /* USER CODE END Application */
 

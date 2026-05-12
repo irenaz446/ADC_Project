@@ -2,14 +2,9 @@
  * @file    uut_task.c
  * @brief   Shared utilities for all UUT peripheral test tasks.
  *
- * Implements the common functionality used by every peripheral task:
- *
+ * Provides:
+ *   UUT_ComputeCRC   — zlib-compatible CRC32 using the STM32 hardware CRC unit.
  *   uut_send_result  — thread-safe UDP result sender via tcpip_callback.
- *
- * Both functions were previously copy-pasted into every task file
- * (uart_task.c, spi_task.c, i2c_task.c, adc_task.c, timer_task.c).
- * Centralising them here eliminates the duplication and ensures any
- * fix or improvement applies to all tests at once.
  */
 
 #include "uut_task.h"
@@ -17,47 +12,37 @@
 #include <stdio.h>
 #include <string.h>
 
-/* ---------------------------------------------------------------------------
- * External CRC handle (defined by CubeMX in crc.c)
- * -------------------------------------------------------------------------*/
 extern CRC_HandleTypeDef hcrc;
 
 /**
  * @brief  Calculates a zlib-compatible CRC32 over a byte buffer.
- * @param  data: Pointer to the data buffer
- * @param  len:  Length in bytes
- * @retval 32-bit CRC result
+ * @param  data  Pointer to the data buffer.
+ * @param  len   Length in bytes.
+ * @retval 32-bit CRC result.
  */
 uint32_t UUT_ComputeCRC(uint8_t *data, uint32_t len)
 {
-    // 1. Reset the CRC unit to 0xFFFFFFFF
     __HAL_CRC_DR_RESET(&hcrc);
-
-    /* 2. Use the HAL Accumulate function.
-       Because hcrc.InputDataFormat is set to BYTES in crc.c,
-       the HAL will internally handle the byte-by-byte writing to the DR register. */
-    uint32_t crc_raw = HAL_CRC_Accumulate(&hcrc, (uint32_t*)data, len);
-
-    // 3. Apply the final XOR to match PC (zlib)
-    return (crc_raw ^ 0xFFFFFFFF);
+    uint32_t crc = HAL_CRC_Accumulate(&hcrc, (uint32_t *)data, len);
+    return (crc ^ 0xFFFFFFFF); /* Final XOR to match zlib convention */
 }
 
-/* ---------------------------------------------------------------------------
- * Private: lwIP core callback that executes the actual UDP send.
+/**
+ * @brief  lwIP core callback that performs the actual UDP send.
  *
- * Called by tcpip_callback() inside defaultTask (the lwIP owner).
- * All lwIP API calls here are safe because we are in the lwIP task context.
- * Frees the udp_send_req_t allocated by uut_send_result() before returning.
+ * Invoked by tcpip_callback() inside defaultTask (the lwIP owner), so all
+ * lwIP API calls here are safe. Frees the udp_send_req_t when done.
  *
- * @param  arg  Pointer to a heap-allocated udp_send_req_t.
- * @retval None
- * -------------------------------------------------------------------------*/
+ * @param  arg  Heap-allocated udp_send_req_t populated by uut_send_result().
+ */
 static void send_result_callback(void *arg)
 {
     udp_send_req_t *req = (udp_send_req_t *)arg;
-    struct udp_pcb *pcb = udp_new();
-    // Total = Opcode(1) + Length(2) + Data(req->res.length) + CRC(4)
+
+    /* Total wire size: Opcode(1) + Length(2) + Data(n) + CRC(4) */
     uint16_t send_size = 1 + 2 + req->res.length + 4;
+
+    struct udp_pcb *pcb = udp_new();
     if (pcb != NULL) {
         struct pbuf *p = pbuf_alloc(PBUF_TRANSPORT, send_size, PBUF_RAM);
         if (p != NULL) {
@@ -68,57 +53,46 @@ static void send_result_callback(void *arg)
         udp_remove(pcb);
     }
 
-    vPortFree(req); /* Always free — even if send failed */
+    vPortFree(req);
 }
 
-/* ---------------------------------------------------------------------------
+/**
  * @brief  Sends a test result to the PC via the lwIP core task.
  *
- * Allocates a udp_send_req_t on the FreeRTOS heap, populates it with the
- * result and destination, then delegates the actual UDP send to
- * send_result_callback via tcpip_callback(). This is the correct pattern
- * for calling lwIP from any task other than defaultTask.
+ * Safe to call from any FreeRTOS task. Allocates a udp_send_req_t on the
+ * heap, builds the packet, and schedules send_result_callback via
+ * tcpip_callback() so the actual send happens inside the lwIP owner task.
  *
- * @param  test_id   Test identifier echoed back to the PC.
- * @param  result    TEST_SUCCESS or TEST_FAILURE.
+ * @param  opcode    Test identifier echoed back to the PC.
+ * @param  length    Byte length of data.
+ * @param  data      Pointer to the payload bytes.
  * @param  pc_addr   Destination IP address.
- * @param  pc_port   Destination port (g_pc_port from the incoming packet).
- * @retval None
- * -------------------------------------------------------------------------*/
+ * @param  pc_port   Destination port (captured from the incoming UDP packet).
+ */
 void uut_send_result(uint8_t opcode, uint16_t length, uint8_t *data,
                      const ip_addr_t *pc_addr, uint16_t pc_port)
 {
-    // 1. Calculate total size: Opcode(1) + Length(2) + Data(n) + CRC(4)
-    uint32_t payload_len = 1 + 2 + length;
-
-    // 2. Allocate memory for the request structure
-    // Ensure your udp_send_req_t is large enough for the new packet_t
-    udp_send_req_t *udp_result = pvPortMalloc(sizeof(udp_send_req_t));
-
-    if (udp_result != NULL) {
-        // 3. Populate the Header
-    	udp_result->res.opcode = opcode;
-    	udp_result->res.length = length;
-
-        // 4. Copy the ADC data (or any other peripheral data)
-        memcpy(udp_result->res.data, data, length);
-
-        // 5. Calculate CRC over Opcode + Length + Data
-        // We use payload_len (total bytes before the CRC footer)
-        uint32_t tx_crc = UUT_ComputeCRC((uint8_t*)&udp_result->res, payload_len);
-
-        // 6. Append CRC to the end of the data buffer
-        // We place the 4-byte CRC immediately after the 'data' field
-        memcpy(&udp_result->res.data[length], &tx_crc, 4);
-
-        // 7. Set Network Info
-        udp_result->addr = *pc_addr;
-        udp_result->port = pc_port;
-        printf("\r\nSend result to PC: (data[0]=%d, data[1]=%d)\r\n",
-        		udp_result->res.data[0], udp_result->res.data[1]);
-        // 8. Schedule the LwIP callback
-        tcpip_callback(send_result_callback, udp_result);
-    } else {
+    udp_send_req_t *req = pvPortMalloc(sizeof(udp_send_req_t));
+    if (req == NULL) {
         printf("ERROR: uut_send_result — heap allocation failed\r\n");
+        return;
     }
+
+    /* Build packet header */
+    req->res.opcode = opcode;
+    req->res.length = length;
+    memcpy(req->res.data, data, length);
+
+    /* Append CRC over Opcode + Length + Data */
+    uint32_t payload_len = 1 + 2 + length;
+    uint32_t tx_crc = UUT_ComputeCRC((uint8_t *)&req->res, payload_len);
+    memcpy(&req->res.data[length], &tx_crc, 4);
+
+    /* Set destination */
+    req->addr = *pc_addr;
+    req->port = pc_port;
+
+    printf("Send result: opcode=%d, length=%d\r\n", opcode, length);
+
+    tcpip_callback(send_result_callback, req);
 }
