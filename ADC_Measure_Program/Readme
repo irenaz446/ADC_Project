@@ -1,11 +1,13 @@
-Run the application:
-
-Bash
-python3 gui_program_adc.py
-
 CLI Usage:
-./uut_cli adc
 
-Report: ./uut_cli --report
+Single: ./pc_test_program uart 10 "aaaaaaahhhhhhhhhhhhhhhhhhhhhdddddddddddddddddvvvvvvvvvvvvvvvvv"
+        ./pc_test_program spi 2
+        ./pc_test_program i2c 1
+        ./pc_test_program adc 3
+        ./pc_test_program timer 5
 
-Clean: ./uut_cli --clean
+All: ./pc_test_program --all 5
+
+Report: ./pc_test_program --report
+
+Clean: ./pc_test_uut --clean

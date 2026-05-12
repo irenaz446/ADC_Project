@@ -21,7 +21,7 @@ test_db_t* test_db_init(const char *path) {
 
     const char *sql = "CREATE TABLE IF NOT EXISTS results ("
                       "id INT PRIMARY KEY, timestamp TEXT, "
-                      "duration REAL, peripheral TEXT, status TEXT);";
+                      "duration REAL, peripheral TEXT, status TEXT, measured_value REAL);";
     
     if (sqlite3_exec(db->handle, sql, NULL, NULL, NULL) != SQLITE_OK) {
         sqlite3_close(db->handle);
@@ -32,9 +32,9 @@ test_db_t* test_db_init(const char *path) {
 }
 
 int test_db_save(test_db_t *db, uint32_t id, double duration, 
-                 const char *peripheral, const char *status) {
+                 const char *peripheral, const char *status, float value) {
     sqlite3_stmt *stmt;
-    const char *sql = "INSERT OR IGNORE INTO results VALUES (?, datetime('now'), ?, ?, ?);";
+    const char *sql = "INSERT OR IGNORE INTO results VALUES (?, datetime('now'), ?, ?, ?, ?);";
     
     if (db == NULL) {
         return -1;
@@ -48,6 +48,7 @@ int test_db_save(test_db_t *db, uint32_t id, double duration,
     sqlite3_bind_double(stmt, 2, duration);
     sqlite3_bind_text(stmt, 3, peripheral, -1, SQLITE_STATIC);
     sqlite3_bind_text(stmt, 4, status, -1, SQLITE_STATIC);
+    sqlite3_bind_double(stmt, 5, (double)value); 
 
     int rc = (sqlite3_step(stmt) == SQLITE_DONE) ? 0 : -1;
     sqlite3_finalize(stmt);
@@ -71,12 +72,12 @@ void test_db_print_report(test_db_t *db) {
         return;
     }
 
-    printf("\n%-10s | %-20s | %-8s | %-10s | %-8s\n", "ID", "Timestamp", "Dur(s)", "Periph", "Result");
+    printf("\n%-10s | %-20s | %-8s | %-10s | %-8s| %-8s\n", "ID", "Timestamp", "Dur(s)", "Periph", "Result", "Value");
     while (sqlite3_step(stmt) == SQLITE_ROW) {
-        printf("%-10d | %-20s | %-8.3f | %-10s | %-8s\n",
+        printf("%-10d | %-20s | %-8.3f | %-10s | %-8s| %-8.2f\n",
                sqlite3_column_int(stmt, 0), sqlite3_column_text(stmt, 1),
                sqlite3_column_double(stmt, 2), sqlite3_column_text(stmt, 3),
-               sqlite3_column_text(stmt, 4));
+               sqlite3_column_text(stmt, 4), sqlite3_column_double(stmt, 5));
     }
     sqlite3_finalize(stmt);
 }

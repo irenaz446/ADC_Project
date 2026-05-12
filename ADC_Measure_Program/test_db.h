@@ -20,7 +20,7 @@ test_db_t* test_db_init(const char *path);
  * @return 0 on success, -1 on failure.
  */
 int test_db_save(test_db_t *db, uint32_t id, double duration, 
-                 const char *peripheral, const char *status);
+                 const char *peripheral, const char *status, float value);
 
 /**
  * @brief Prints all records (Print on demand).

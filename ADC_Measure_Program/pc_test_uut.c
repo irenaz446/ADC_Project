@@ -79,16 +79,19 @@ static int run_single_test(int sockfd, test_db_t *db, uint8_t periph_id, const c
     // 7. Extract Results from Data (Data starts at index 3)
     uint16_t adc_result = 0;
     uint16_t data_len;
+    float measured_val = 0.0f;
     memcpy(&data_len, &rx_buffer[1], 2);
 
     if (data_len >= 2) {
         memcpy(&adc_result, &rx_buffer[3], 2);
-        printf("SUCCESS - Value: %u (%.3fs)\n", adc_result, dur);
+        // Convert 12-bit ADC to Voltage (3.3V ref)
+        measured_val = (adc_result / 4095.0f) * 3.3f;
+        printf("SUCCESS - Value: %u (%.3f V)\n", adc_result, measured_val);
     } else {
         printf("SUCCESS (No data returned)\n");
     }
 
-    return test_db_save(db, (uint32_t)time(NULL), dur, name, "SUCCESS");
+    return test_db_save(db, (uint32_t)time(NULL), dur, name, "SUCCESS", measured_val);
 }
 
 int main(int argc, char *argv[]) {
